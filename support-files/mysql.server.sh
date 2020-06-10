@@ -77,7 +77,7 @@ else
     datadir="$basedir/data"
   fi
   sbindir="$basedir/sbin"
-  if test -f "$basedir/bin/mysqld"
+  if test -f "$basedir/bin/mariadbd"
   then
     libexecdir="$basedir/bin"
   else
@@ -134,7 +134,7 @@ parse_server_arguments() {
 		      datadir="$basedir/data"
 		    fi
 		    sbindir="$basedir/sbin"
-                    if test -f "$basedir/bin/mysqld"
+                    if test -f "$basedir/bin/mariadbd"
                     then
                       libexecdir="$basedir/bin"
                     else
@@ -387,8 +387,8 @@ case "$mode" in
         exit 1
       fi
     else
-      # Try to find appropriate mysqld process
-      mysqld_pid=`pgrep -f $libexecdir/mysqld`
+      # Try to find appropriate mariadbd process
+      mysqld_pid=`pgrep -f $libexecdir/mariadbd`
 
       # test if multiple pids exist
       pid_count=`echo $mysqld_pid | wc -w`
@@ -412,18 +412,18 @@ case "$mode" in
     # Safeguard (relative paths, core dumps..)
     cd $basedir
     echo $echo_n "Testing MariaDB configuration syntax"
-    daemon=$bindir/mysqld
-    if test -x $libexecdir/mysqld
+    daemon=$bindir/mariadbd
+    if test -x $libexecdir/mariadbd
     then
-      daemon=$libexecdir/mysqld
-    elif test -x $sbindir/mysqld
+      daemon=$libexecdir/mariadbd
+    elif test -x $sbindir/mariadbd
     then
-      daemon=$sbindir/mysqld
-    elif test -x `which mysqld`
+      daemon=$sbindir/mariadbd
+    elif test -x `which mariadbd`
     then
-      daemon=`which mysqld`
+      daemon=`which mariadbd`
     else
-      log_failure_msg "Unable to locate the mysqld binary!"
+      log_failure_msg "Unable to locate the mariadbd binary!"
       exit 1
     fi
     help_out=`$daemon --help 2>&1`; r=$?
