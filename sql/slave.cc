@@ -1432,6 +1432,13 @@ int start_slave_threads(THD *thd,
                               mi);
     if (unlikely(error))
       terminate_slave_threads(mi, thread_mask & SLAVE_IO, !need_slave_mutex);
+
+    if (!rpl_global_gtid_slave_state->is_gtid_slave_pos_compatible &&
+            mi->parallel_mode > SLAVE_PARALLEL_CONSERVATIVE &&
+            opt_slave_parallel_threads > 1)
+      sql_print_warning("Non Transactional gtid_slave_pos table with"
+                         " Optimistic/Aggressive parallel"
+                         " mode can cause replication failure on slave");
   }
   DBUG_RETURN(error);
 }

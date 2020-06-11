@@ -1530,6 +1530,8 @@ scan_one_gtid_slave_pos_table(THD *thd, HASH *hash, DYNAMIC_ARRAY *array,
     goto end;
   table_opened= true;
   table= tlist.table;
+  rpl_global_gtid_slave_state->is_gtid_slave_pos_compatible=
+                         !(table->file->ha_table_flags() & HA_NO_TRANSACTIONS);
 
   if ((err= gtid_check_rpl_slave_state_table(table)))
     goto end;
@@ -1653,6 +1655,7 @@ scan_all_gtid_slave_pos_table(THD *thd, int (*cb)(THD *, LEX_CSTRING *, void *),
   else
   {
     size_t i;
+    int j= 0;
     Dynamic_array<LEX_CSTRING*> files(dirp->number_of_files);
     Discovered_table_list tl(thd, &files);
     int err;
@@ -1670,10 +1673,13 @@ scan_all_gtid_slave_pos_table(THD *thd, int (*cb)(THD *, LEX_CSTRING *, void *),
                   rpl_gtid_slave_state_table_name.str,
                   rpl_gtid_slave_state_table_name.length) == 0)
       {
+        j++;
         if ((err= (*cb)(thd, files.at(i), cb_data)))
           return err;
       }
     }
+    if (j > 1)
+      rpl_global_gtid_slave_state->is_gtid_slave_pos_compatible= true;
   }
 
   return 0;
