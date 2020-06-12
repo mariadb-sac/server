@@ -3778,29 +3778,8 @@ int dump_leaf_key(void* key_arg, element_count count __attribute__((unused)),
   for (; arg < arg_end; arg++)
   {
     String *res;
-    /*
-      We have to use get_tmp_table_field() instead of
-      real_item()->get_tmp_table_field() because we want the field in
-      the temporary table, not the original field
-      We also can't use table->field array to access the fields
-      because it contains both order and arg list fields.
-     */
-    if ((*arg)->const_item())
-      res= item->get_str_from_item(*arg, &tmp);
-    else
-    {
-      Field *field= (*arg)->get_tmp_table_field();
-      if (field)
-      {
-        uint offset= (field->offset(field->table->record[0]) -
-                      table->s->null_bytes);
-        DBUG_ASSERT(offset < table->s->reclength);
-        res= item->get_str_from_field(*arg, field, &tmp, key,
-                                      offset + item->get_null_bytes());
-      }
-      else
-        res= item->get_str_from_item(*arg, &tmp);
-    }
+
+    res= item->get_value_for_arg(&tmp, *arg, key);
 
     if (res)
       result->append(*res);
@@ -4052,6 +4031,7 @@ struct st_repack_tree {
   TREE tree;
   TABLE *table;
   size_t len, maxlen;
+  bool skip_nulls;
 };
 
 extern "C"
@@ -4061,8 +4041,9 @@ int copy_to_tree(void* key, element_count count __attribute__((unused)),
   struct st_repack_tree *st= (struct st_repack_tree*)arg;
   TABLE *table= st->table;
   Field* field= table->field[0];
-  const uchar *ptr= field->ptr_in_record((uchar*)key - table->s->null_bytes);
-  size_t len= (size_t)field->val_int(ptr);
+
+  size_t len= (size_t)field->val_int((uchar*)key +
+                                      (st->skip_nulls ? 0 : table->s->null_bytes));
 
   DBUG_ASSERT(count == 1);
   if (!tree_insert(&st->tree, key, 0, st->tree.custom_arg))
@@ -4087,6 +4068,7 @@ bool Item_func_group_concat::repack_tree(THD *thd)
   st.table= table;
   st.len= 0;
   st.maxlen= (size_t)thd->variables.group_concat_max_len;
+  st.skip_nulls= skip_nulls();
   tree_walk(tree, &copy_to_tree, &st, left_root_right);
   if (st.len <= st.maxlen) // Copying aborted. Must be OOM
   {
@@ -4147,6 +4129,10 @@ bool Item_func_group_concat::add(bool exclude_nulls)
   }
 
   null_value= FALSE;
+
+  if (tree)
+    table->field[0]->store(row_str_len, FALSE);
+
   bool row_eligible= TRUE;
 
   if (distinct) 
@@ -4158,21 +4144,10 @@ bool Item_func_group_concat::add(bool exclude_nulls)
       row_eligible= FALSE;
   }
 
-  TREE_ELEMENT *el= 0;                          // Only for safety
-  if (row_eligible && tree)
-  {
-    THD *thd= table->in_use;
-    table->field[0]->store(row_str_len, FALSE);
-    if (tree_len > thd->variables.group_concat_max_len * GCONCAT_REPACK_FACTOR
-        && tree->elements_in_tree > 1)
-      if (repack_tree(thd))
-        return 1;
-    el= tree_insert(tree, get_record_pointer(), 0, tree->custom_arg);
-    /* check if there was enough memory to insert the row */
-    if (!el)
-      return 1;
-    tree_len+= row_str_len;
-  }
+  if (!distinct && row_eligible && tree &&
+      insert_to_order_tree(row_str_len, get_record_pointer()))
+    return TRUE;
+
   /*
     In case of GROUP_CONCAT with DISTINCT or ORDER BY (or both) don't dump the
     row to the output buffer here. That will be done in val_str.
@@ -4413,7 +4388,12 @@ String* Item_func_group_concat::val_str(String* str)
 
   if (!result_finalized) // Result yet to be written.
   {
-    if (tree != NULL) // order by
+    if (tree && distinct)
+    {
+      unique_filter->walk(table, &dump_leaf_key_to_tree, this);
+      tree_walk(tree, &dump_leaf_key, this, left_root_right);
+    }
+    else if (tree != NULL) // order by
       tree_walk(tree, &dump_leaf_key, this, left_root_right);
     else if (distinct) // distinct (and no order by).
       unique_filter->walk(table, &dump_leaf_key, this);
@@ -4494,6 +4474,100 @@ uint Item_func_group_concat::get_null_bytes()
 {
   return skip_nulls() ? 0 : table->s->null_bytes;
 }
+
+
+/*
+  @brief
+    Insert the key  to the ORDER BY tree of GROUP_CONCAT
+
+  @param
+    row_str_len               length of the key
+    key                       key value
+*/
+bool Item_func_group_concat::insert_to_order_tree(uint row_str_len, uchar *key)
+{
+  DBUG_ASSERT(tree);
+
+  TREE_ELEMENT *el= 0;                          // Only for safety
+  THD *thd= table->in_use;
+  if (tree_len > thd->variables.group_concat_max_len * GCONCAT_REPACK_FACTOR
+      && tree->elements_in_tree > 1)
+    if (repack_tree(thd))
+      return TRUE;
+  el= tree_insert(tree, key, 0, tree->custom_arg);
+  /* check if there was enough memory to insert the row */
+  if (!el)
+    return TRUE;
+  tree_len+= row_str_len;
+  return FALSE;
+}
+
+
+/*
+  @brief
+    Get the value of the item
+  @param res                     String where the value of the item will be
+                                 stored
+  @param arg                     Item to get the value for
+  @param key                     key value
+*/
+
+String* Item_func_group_concat::get_value_for_arg(String *res, Item *arg, uchar *key)
+{
+  /*
+    We have to use get_tmp_table_field() instead of
+    real_item()->get_tmp_table_field() because we want the field in
+    the temporary table, not the original field
+    We also can't use table->field array to access the fields
+    because it contains both order and arg list fields.
+   */
+
+  if (arg->const_item())
+    res= get_str_from_item(arg, res);
+  else
+  {
+    Field *field= arg->get_tmp_table_field();
+    if (field)
+    {
+      uint offset= (field->offset(field->table->record[0]) -
+                    table->s->null_bytes);
+      DBUG_ASSERT(offset < table->s->reclength);
+      res= get_str_from_field(arg, field, res, key,
+                              offset + get_null_bytes());
+    }
+    else
+      res= get_str_from_item(arg, res);
+  }
+  return res;
+}
+
+
+/*
+  @brief
+    Insert a key into a tree to achieve ordering
+  @details
+    It is a callback function used by Unique class, where we walk over
+    the Unique tree and for each key we insert the key into the ORDER BY tree
+  @param key_arg           key to be inserted
+  @param item_arg          compare arg
+*/
+
+int
+Item_func_group_concat::dump_leaf_key_to_tree(void* key_arg,
+                                  element_count count __attribute__((unused)),
+                                  void* item_arg)
+{
+  Item_func_group_concat *item= (Item_func_group_concat *) item_arg;
+  TABLE *table= item->table;
+  String tmp((char *)table->record[1], table->s->reclength,
+             default_charset_info);
+
+  uchar *key= (uchar *) key_arg;
+  uint row_str_len= (uint)table->field[0]->val_int(key);
+
+  return item->insert_to_order_tree(row_str_len, key);
+}
+
 
 
 void Item_func_group_concat::print(String *str, enum_query_type query_type)

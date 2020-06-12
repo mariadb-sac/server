@@ -2017,6 +2017,11 @@ public:
   qsort_cmp2 get_comparator_function_for_order_by();
   uchar* get_record_pointer();
   uint get_null_bytes();
+  bool insert_to_order_tree(uint row_str_len, uchar *key);
+  String *get_value_for_arg(String *res, Item *arg, uchar *key);
+  static int dump_leaf_key_to_tree(void* key_arg,
+                                   element_count count __attribute__((unused)),
+                                   void* item_arg);
 
 };
 
