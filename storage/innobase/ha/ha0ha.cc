@@ -167,10 +167,6 @@ ha_clear(
 		break;
 
 	case HASH_TABLE_SYNC_RW_LOCK:
-		for (ulint i = 0; i < table->n_sync_obj; ++i) {
-			rw_lock_free(&table->sync_obj.rw_locks[i]);
-		}
-
 		ut_free(table->sync_obj.rw_locks);
 		table->sync_obj.rw_locks = NULL;
 		break;
@@ -209,7 +205,7 @@ void hash_assert_can_modify(hash_table_t *table, ulint fold)
     ut_ad(mutex_own(hash_get_mutex(table, fold)));
     return;
   case HASH_TABLE_SYNC_RW_LOCK:
-    ut_ad(buf_pool.page_hash_lock_own_flagged(fold, RW_LOCK_FLAG_X));
+    ut_ad(buf_pool.hash_lock_get_low(fold)->is_write_locked());
     return;
   case HASH_TABLE_SYNC_NONE:
     return;
@@ -226,8 +222,7 @@ void hash_assert_can_search(hash_table_t *table, ulint fold)
     ut_ad(mutex_own(hash_get_mutex(table, fold)));
     return;
   case HASH_TABLE_SYNC_RW_LOCK:
-    ut_ad(buf_pool.page_hash_lock_own_flagged(fold, RW_LOCK_FLAG_X |
-                                              RW_LOCK_FLAG_S));
+    ut_ad(buf_pool.hash_lock_get_low(fold)->is_locked());
     return;
   case HASH_TABLE_SYNC_NONE:
     return;

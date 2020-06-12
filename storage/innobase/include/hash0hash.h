@@ -28,7 +28,7 @@ Created 5/20/1997 Heikki Tuuri
 #define hash0hash_h
 
 #include "mem0mem.h"
-#include "sync0rw.h"
+#include "rw_lock.h"
 
 struct hash_table_t;
 struct hash_cell_t;
@@ -46,7 +46,7 @@ enum hash_table_sync_t {
 					this hash_table. */
 	HASH_TABLE_SYNC_MUTEX,		/*!< Use mutexes to control
 					access to this hash_table. */
-	HASH_TABLE_SYNC_RW_LOCK		/*!< Use rw_locks to control
+	HASH_TABLE_SYNC_RW_LOCK		/*!< Use rw_lock to control
 					access to this hash_table. */
 };
 
@@ -61,7 +61,7 @@ hash_create(
 
 /*************************************************************//**
 Creates a sync object array array to protect a hash table.
-::sync_obj can be mutexes or rw_locks depening on the type of
+::sync_obj can be mutex or rw_lock depening on the type of
 hash table. */
 void
 hash_create_sync_obj(
@@ -439,7 +439,7 @@ struct hash_table_t {
 		ib_mutex_t*	mutexes;/* NULL, or an array of mutexes
 					used to protect segments of the
 					hash table */
-		rw_lock_t*	rw_locks;/* NULL, or an array of rw_locks
+		rw_lock*	rw_locks;/* NULL, or an array of rw_lock
 					used to protect segments of the
 					buf_pool.page_hash */
 	} sync_obj;

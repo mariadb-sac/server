@@ -86,7 +86,7 @@ hash_table_free(
 
 /*************************************************************//**
 Creates a sync object array to protect a hash table.
-::sync_obj can be mutexes or rw_locks depening on the type of
+::sync_obj can be mutex or rw_lock depening on the type of
 hash table. */
 void
 hash_create_sync_obj(
@@ -116,19 +116,8 @@ hash_create_sync_obj(
 		break;
 
 	case HASH_TABLE_SYNC_RW_LOCK: {
-
-		latch_level_t	level = sync_latch_get_level(id);
-
-		ut_a(level != SYNC_UNKNOWN);
-
-		table->sync_obj.rw_locks = static_cast<rw_lock_t*>(
-			ut_malloc_nokey(n_sync_obj * sizeof(rw_lock_t)));
-
-		for (ulint i = 0; i < n_sync_obj; i++) {
-			rw_lock_create(hash_table_locks_key,
-			     table->sync_obj.rw_locks + i, level);
-		}
-
+		table->sync_obj.rw_locks = static_cast<rw_lock*>(
+			ut_zalloc_nokey(n_sync_obj * sizeof(rw_lock)));
 		break;
 	}
 

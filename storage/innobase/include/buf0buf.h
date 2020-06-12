@@ -1605,48 +1605,32 @@ public:
   }
 
   /** Get the page_hash latch for a page */
-  rw_lock_t *hash_lock_get(const page_id_t id) const
+  rw_lock *hash_lock_get(const page_id_t id) const
   {
     return hash_lock_get_low(id.fold());
   }
   /** Get a page_hash latch. */
-  rw_lock_t *hash_lock_get_low(ulint fold) const
+  rw_lock *hash_lock_get_low(ulint fold) const
   {
     return page_hash->sync_obj.rw_locks +
       hash_get_sync_obj_index(page_hash, fold);
   }
-#ifdef UNIV_DEBUG
-  /** Check whether a page_hash latch is being held */
-  bool page_hash_lock_own_flagged(ulint fold, rw_lock_flags_t flagged) const
-  {
-    return rw_lock_own_flagged(hash_lock_get_low(fold), flagged);
-  }
-#endif
 
   /** Acquire a page_hash bucket latch, tolerating concurrent resize()
   @tparam exclusive  whether the latch is to be acquired exclusively
   @param fold    hash bucket key */
-  template<bool exclusive> rw_lock_t *page_hash_lock(ulint fold)
+  template<bool exclusive> rw_lock *page_hash_lock(ulint fold)
   {
-    rw_lock_t *latch= hash_lock_get_low(fold);
-    if (exclusive)
-      rw_lock_x_lock(latch);
-    else
-      rw_lock_s_lock(latch);
-    rw_lock_t *l;
+    rw_lock *latch= hash_lock_get_low(fold);
+    latch->acquire<exclusive>();
+    rw_lock *l;
     while ((l= hash_lock_get_low(fold)) != latch)
     {
-      if (exclusive)
-        rw_lock_x_unlock(latch);
-      else
-        rw_lock_s_unlock(latch);
+      latch->release<exclusive>();
       /* FIXME: what if we resize() completes several times while we
       are not holding any latch here? Is the latch guaranteed to be valid? */
-      if (exclusive)
-        rw_lock_x_lock(l);
-      else
-        rw_lock_s_lock(l);
       latch= l;
+      latch->acquire<exclusive>();
     }
     return latch;
   }
@@ -1659,9 +1643,7 @@ public:
   buf_page_t *page_hash_get_low(const page_id_t id, const ulint fold)
   {
     ut_ad(id.fold() == fold);
-    ut_ad(mutex_own(&mutex) ||
-          rw_lock_own_flagged(hash_lock_get_low(fold),
-                              RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
+    ut_ad(mutex_own(&mutex) || hash_lock_get_low(fold)->is_locked());
     buf_page_t *bpage;
     /* Look for the page in the hash table */
     HASH_SEARCH(hash, page_hash, fold, buf_page_t*, bpage,
@@ -1679,17 +1661,14 @@ private:
   @retval nullptr  if no block was found; !lock || !*lock will also hold */
   template<bool exclusive,bool watch>
   buf_page_t *page_hash_get_locked(const page_id_t page_id, ulint fold,
-                                   rw_lock_t **hash_lock)
+                                   rw_lock **hash_lock)
   {
     ut_ad(hash_lock || !exclusive);
-    rw_lock_t *latch= page_hash_lock<exclusive>(fold);
+    rw_lock *latch= page_hash_lock<exclusive>(fold);
     buf_page_t *bpage= page_hash_get_low(page_id, fold);
     if (!bpage || watch_is_sentinel(*bpage))
     {
-      if (exclusive)
-        rw_lock_x_unlock(latch);
-      else
-        rw_lock_s_unlock(latch);
+      latch->release<exclusive>();
       if (hash_lock)
         *hash_lock= nullptr;
       return watch ? bpage : nullptr;
@@ -1700,10 +1679,8 @@ private:
 
     if (hash_lock)
       *hash_lock= latch; /* to be released by the caller */
-    else if (exclusive)
-      rw_lock_x_unlock(latch);
     else
-      rw_lock_s_unlock(latch);
+      latch->release<exclusive>();
     return bpage;
   }
 public:
@@ -1716,7 +1693,7 @@ public:
   @retval nullptr  if no block was found; !lock || !*lock will also hold */
   template<bool exclusive>
   buf_page_t *page_hash_get_locked(const page_id_t page_id, ulint fold,
-                                   rw_lock_t **hash_lock)
+                                   rw_lock **hash_lock)
   { return page_hash_get_locked<exclusive,false>(page_id, fold, hash_lock); }
 
   /** @return whether the buffer pool contains a page
@@ -1728,32 +1705,12 @@ public:
     return page_hash_get_locked<false,watch>(page_id, page_id.fold(), nullptr);
   }
 
-  /** Acquire exclusive latches on all page_hash buckets. */
-  void page_hash_lock_all() const
-  {
-    ut_ad(page_hash->magic_n == HASH_TABLE_MAGIC_N);
-    ut_ad(page_hash->type == HASH_TABLE_SYNC_RW_LOCK);
-    for (ulint i= 0; i < page_hash->n_sync_obj; i++)
-      rw_lock_x_lock(&page_hash->sync_obj.rw_locks[i]);
-  }
-  /** Release exclusive latches on all the page_hash buckets. */
-  void page_hash_unlock_all() const
-  {
-    ut_ad(page_hash->magic_n == HASH_TABLE_MAGIC_N);
-    ut_ad(page_hash->type == HASH_TABLE_SYNC_RW_LOCK);
-
-    for (ulint i = 0; i < page_hash->n_sync_obj; i++)
-      rw_lock_x_unlock(&page_hash->sync_obj.rw_locks[i]);
-  }
-
   /** Determine if a block is a sentinel for a buffer pool watch.
   @param bpage page descriptor
   @return whether bpage a sentinel for a buffer pool watch */
   bool watch_is_sentinel(const buf_page_t &bpage)
   {
-    ut_ad(mutex_own(&mutex) ||
-          rw_lock_own_flagged(hash_lock_get(bpage.id()),
-                              RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
+    ut_ad(mutex_own(&mutex) || hash_lock_get(bpage.id())->is_locked());
     ut_ad(bpage.in_file());
 
     if (&bpage < &watch[0] || &bpage >= &watch[UT_ARR_SIZE(watch)])
@@ -1775,11 +1732,11 @@ public:
   bool watch_occurred(const page_id_t id)
   {
     const ulint fold= id.fold();
-    rw_lock_t *hash_lock= page_hash_lock<false>(fold);
+    rw_lock *hash_lock= page_hash_lock<false>(fold);
     /* The page must exist because watch_set() increments buf_fix_count. */
     buf_page_t *bpage= page_hash_get_low(id, fold);
     const bool is_sentinel= watch_is_sentinel(*bpage);
-    rw_lock_s_unlock(hash_lock);
+    hash_lock->read_unlock();
     return !is_sentinel;
   }
 
@@ -1790,7 +1747,7 @@ public:
   @param hash_lock  exclusively held page_hash latch
   @return a buffer pool block corresponding to id
   @retval nullptr   if the block was not present, and a watch was installed */
-  inline buf_page_t *watch_set(const page_id_t id, rw_lock_t **hash_lock);
+  inline buf_page_t *watch_set(const page_id_t id, rw_lock **hash_lock);
 
   /** Stop watching whether a page has been read in.
   watch_set(id) must have returned nullptr before.
@@ -1798,7 +1755,7 @@ public:
   void watch_unset(const page_id_t id)
   {
     const ulint fold= id.fold();
-    rw_lock_t *hash_lock= page_hash_lock<true>(fold);
+    rw_lock *hash_lock= page_hash_lock<true>(fold);
     /* The page must exist because watch_set() increments buf_fix_count. */
     buf_page_t *watch= page_hash_get_low(id, fold);
     if (watch->unfix() == 0 && watch_is_sentinel(*watch))
@@ -1807,7 +1764,7 @@ public:
       ut_ad(watch->in_page_hash);
       ut_d(watch->in_page_hash= false);
       HASH_DELETE(buf_page_t, hash, page_hash, fold, watch);
-      rw_lock_x_unlock(hash_lock);
+      hash_lock->write_unlock();
       // Now that the watch is detached from page_hash, release it to watch[].
       mutex_enter(&mutex);
       /* It is possible that watch_remove() already removed the watch. */
@@ -1820,7 +1777,7 @@ public:
       mutex_exit(&mutex);
     }
     else
-      rw_lock_x_unlock(hash_lock);
+      hash_lock->write_unlock();
   }
 
   /** Remove the sentinel block for the watch before replacing it with a
@@ -2151,15 +2108,15 @@ inline void buf_page_t::set_state(buf_page_state state)
     if (!in_file()) break;
     /* fall through */
   case BUF_BLOCK_FILE_PAGE:
-    ut_ad(rw_lock_own(buf_pool.hash_lock_get(id_), RW_LOCK_X));
+    ut_ad(buf_pool.hash_lock_get(id_)->is_write_locked());
     break;
   case BUF_BLOCK_NOT_USED:
     if (!in_file()) break;
     /* fall through */
   case BUF_BLOCK_ZIP_PAGE:
-    ut_ad((this >= &buf_pool.watch[0] &&
-           this <= &buf_pool.watch[UT_ARR_SIZE(buf_pool.watch)]) ||
-          rw_lock_own(buf_pool.hash_lock_get(id_), RW_LOCK_X));
+    ut_ad(buf_pool.hash_lock_get(id_)->is_write_locked() ||
+	  (this >= &buf_pool.watch[0] &&
+           this <= &buf_pool.watch[UT_ARR_SIZE(buf_pool.watch)]));
     break;
   }
 #endif
@@ -2181,7 +2138,7 @@ inline void buf_page_t::set_corrupt_id()
     break;
   case BUF_BLOCK_ZIP_PAGE:
   case BUF_BLOCK_FILE_PAGE:
-    ut_ad(rw_lock_own(buf_pool.hash_lock_get(id_), RW_LOCK_X));
+    ut_ad(buf_pool.hash_lock_get(id_)->is_write_locked());
     break;
   case BUF_BLOCK_NOT_USED:
   case BUF_BLOCK_MEMORY:

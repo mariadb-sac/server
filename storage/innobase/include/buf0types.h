@@ -29,6 +29,7 @@ Created 11/17/1995 Heikki Tuuri
 
 #include "os0event.h"
 #include "ut0ut.h"
+#include "rw_lock.h"
 
 /** Buffer page (uncompressed or compressed) */
 class buf_page_t;
