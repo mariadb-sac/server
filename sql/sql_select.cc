@@ -2643,19 +2643,19 @@ void JOIN::exec_inner()
              procedure->end_of_records()) : result->send_data(fields_list)> 0))
 	  error= 1;
 	else
-	  send_records= ((select_options & OPTION_FOUND_ROWS) ? 1 :
+	  send_records= ((select_options & OPTION_FOUND_ROWS) ? 1:
                          thd->get_sent_row_count());
       }
       else
         send_records= 0;
       if (!error)
       {
+        /* Single select (without union) always returns 0 or 1 row */
+        thd->limit_found_rows= send_records;
         join_free();                      // Unlock all cursors
         error= (int) result->send_eof();
       }
     }
-    /* Single select (without union) always returns 0 or 1 row */
-    thd->limit_found_rows= send_records;
     thd->set_examined_row_count(0);
     DBUG_VOID_RETURN;
   }
